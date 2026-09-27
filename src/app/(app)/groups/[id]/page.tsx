@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { useGroup, useExpenses, useBalances, useSettlements } from "@/lib/queries";
+import { useGroupStore } from "@/lib/group-store";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ import { GroupActivityFeed } from "@/components/groups/GroupActivityFeed";
 import { GroupBudgetTracker } from "@/components/GroupBudgetTracker";
 import { ExportGroupStatementButton } from "@/components/ExportGroupStatementButton";
 import { GroupExportButton } from "@/components/groups/GroupExportButton";
-import { TreasuryOverview } from "@/components/treasury/TreasuryOverview";
+import { TreasuryView } from "@/components/treasury/TreasuryView";
 import { ExpenseListFilters, type ExpenseFilterState } from "@/components/expenses/expense-list-filters";
 import { ListSkeleton, GroupHeaderSkeleton, SkeletonBoundary } from "@/components/ui/skeleton";
 import type { Expense, GroupMember } from "@/lib/types";
@@ -34,6 +35,15 @@ export default function GroupDetailPage() {
 
   const [addExpenseOpen, setAddExpenseOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const setSelectedGroup = useGroupStore((s) => s.setSelectedGroup);
+
+  // The route is the source of truth for which group is active — mirror it into
+  // the persisted store so the selection (and the recent-groups list) survives a
+  // reload and is readable by views that don't carry the param, e.g. history (#494).
+  useEffect(() => {
+    if (groupId) setSelectedGroup(groupId);
+  }, [groupId, setSelectedGroup]);
+
   const [filters, setFilters] = useState<ExpenseFilterState>({ search: "", payer: "", status: "", asset: "", pageSize: 10 });
   const [page, setPage] = useState(1);
 
@@ -195,7 +205,12 @@ export default function GroupDetailPage() {
 
             {group?.treasuryEnabled && (
               <ErrorBoundary>
-                <TreasuryOverview groupId={groupId} />
+                <TreasuryView
+                  groupId={groupId}
+                  treasuryEnabled={group.treasuryEnabled}
+                  requiredSigners={group.treasuryRequiredSigners}
+                  treasuryAccountPublicKey={group.treasuryAccountPublicKey}
+                />
               </ErrorBoundary>
             )}
 
