@@ -19,7 +19,7 @@ import { GroupActivityFeed } from "@/components/groups/GroupActivityFeed";
 import { GroupBudgetTracker } from "@/components/GroupBudgetTracker";
 import { ExportGroupStatementButton } from "@/components/ExportGroupStatementButton";
 import { GroupExportButton } from "@/components/groups/GroupExportButton";
-import { TreasuryOverview } from "@/components/treasury/TreasuryOverview";
+import { TreasuryView } from "@/components/treasury/TreasuryView";
 import { ExpenseListFilters, type ExpenseFilterState } from "@/components/expenses/expense-list-filters";
 import { ListSkeleton, GroupHeaderSkeleton, SkeletonBoundary } from "@/components/ui/skeleton";
 import type { Expense, GroupMember } from "@/lib/types";
@@ -205,7 +205,12 @@ export default function GroupDetailPage() {
 
             {group?.treasuryEnabled && (
               <ErrorBoundary>
-                <TreasuryOverview groupId={groupId} />
+                <TreasuryView
+                  groupId={groupId}
+                  treasuryEnabled={group.treasuryEnabled}
+                  requiredSigners={group.treasuryRequiredSigners}
+                  treasuryAccountPublicKey={group.treasuryAccountPublicKey}
+                />
               </ErrorBoundary>
             )}
 
