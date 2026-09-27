@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { useGroup, useExpenses, useBalances, useSettlements } from "@/lib/queries";
+import { useGroupStore } from "@/lib/group-store";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,7 @@ import { ExportGroupStatementButton } from "@/components/ExportGroupStatementBut
 import { GroupExportButton } from "@/components/groups/GroupExportButton";
 import { TreasuryOverview } from "@/components/treasury/TreasuryOverview";
 import { ExpenseListFilters, type ExpenseFilterState } from "@/components/expenses/expense-list-filters";
-import { ListSkeleton, GroupHeaderSkeleton } from "@/components/ui/skeleton";
+import { ListSkeleton, GroupHeaderSkeleton, SkeletonBoundary } from "@/components/ui/skeleton";
 import type { Expense, GroupMember } from "@/lib/types";
 
 export default function GroupDetailPage() {
@@ -34,6 +35,15 @@ export default function GroupDetailPage() {
 
   const [addExpenseOpen, setAddExpenseOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const setSelectedGroup = useGroupStore((s) => s.setSelectedGroup);
+
+  // The route is the source of truth for which group is active — mirror it into
+  // the persisted store so the selection (and the recent-groups list) survives a
+  // reload and is readable by views that don't carry the param, e.g. history (#494).
+  useEffect(() => {
+    if (groupId) setSelectedGroup(groupId);
+  }, [groupId, setSelectedGroup]);
+
   const [filters, setFilters] = useState<ExpenseFilterState>({ search: "", payer: "", status: "", asset: "", pageSize: 10 });
   const [page, setPage] = useState(1);
 
@@ -95,9 +105,10 @@ export default function GroupDetailPage() {
         </div>
 
         <ErrorBoundary>
-          {groupQuery.isLoading ? (
-            <GroupHeaderSkeleton />
-          ) : (
+          <SkeletonBoundary
+            isPending={groupQuery.isPending}
+            skeleton={<GroupHeaderSkeleton />}
+          >
             <div className="rounded-2xl border-3 border-ink bg-paper p-6 shadow-brutal">
               <h1 className="font-display text-2xl uppercase tracking-tight">
                 {group?.name ?? "Group"}
@@ -106,7 +117,7 @@ export default function GroupDetailPage() {
                 <p className="mt-1 text-sm text-ink/70">{group.description}</p>
               )}
             </div>
-          )}
+          </SkeletonBoundary>
         </ErrorBoundary>
 
         {/* Settling a non-native asset fails on-chain without a trustline,
@@ -115,15 +126,16 @@ export default function GroupDetailPage() {
         {!group?.archived && <TrustlineBanner />}
 
         <ErrorBoundary>
-          {groupQuery.isLoading ? (
-            <ListSkeleton rows={2} variant="balance" />
-          ) : (
+          <SkeletonBoundary
+            isPending={groupQuery.isPending}
+            skeleton={<ListSkeleton rows={2} variant="balance" />}
+          >
             <GroupBudgetTracker
               groupId={groupId}
               expenses={expenses}
               isAdmin={isAdmin}
             />
-          )}
+          </SkeletonBoundary>
         </ErrorBoundary>
 
         <div className="grid gap-6 lg:grid-cols-3">
@@ -136,7 +148,7 @@ export default function GroupDetailPage() {
 
                 <ExpenseListFilters expenses={expenses} members={members} onChange={onFilterChange} />
 
-                {expensesQuery.isLoading && (
+                {expensesQuery.isPending && (
                   <ListSkeleton rows={5} variant="expense" />
                 )}
                 {expensesQuery.isError && (
@@ -147,7 +159,7 @@ export default function GroupDetailPage() {
                     </Button>
                   </div>
                 )}
-                {!expensesQuery.isLoading && !expensesQuery.isError && visibleExpenses.length === 0 && (
+                {!expensesQuery.isPending && !expensesQuery.isError && visibleExpenses.length === 0 && (
                   <EmptyState
                     icon={<Search className="h-7 w-7" />}
                     title="No expenses found"
