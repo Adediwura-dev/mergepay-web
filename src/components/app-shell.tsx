@@ -31,15 +31,18 @@ import { OfflineSyncBanner } from "./OfflineSyncBanner";
 import { OfflineBanner } from "./OfflineBanner";
 import { useOfflineSync } from "@/hooks/useOfflineSync";
 import { BottomNav } from "./layout/BottomNav";
+import { CommandPalette } from "./CommandPalette";
 
 
-const NAV = [
+export const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/groups", label: "Groups", icon: Users },
   { href: "/anchors", label: "Anchors", icon: Banknote },
   { href: "/history", label: "History", icon: History },
   { href: "/settings", label: "Settings", icon: Settings },
-];
+] as const;
+
+export type NAV = typeof NAV[number];
 
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -48,6 +51,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const { refresh: refreshWallet, ...walletStatus } = useWalletStatus();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
 
   // Escape, Tab trapping, focus containment and the page scroll lock while the
@@ -59,6 +63,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     onClose: () => setMobileOpen(false),
     panelRef: drawerRef,
   });
+
+  useEffect(() => {
+    function handleGlobalKeyDown(e: KeyboardEvent) {
+      const tag = (document.activeElement?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || document.activeElement?.hasAttribute("contenteditable")) return;
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        e.stopPropagation();
+        setCmdPaletteOpen((prev) => !prev);
+      }
+    }
+    window.addEventListener("keydown", handleGlobalKeyDown, true);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown, true);
+  }, []);
 
   // Group content must never survive a switch to a different wallet.
   useWalletScopedCache();
@@ -205,6 +223,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </main>
       <BottomNav />
+      <CommandPalette open={cmdPaletteOpen} onClose={() => setCmdPaletteOpen(false)} />
     </div>
   );
 }
