@@ -9,11 +9,8 @@ import { NetAmount, Money } from "@/components/amount";
 import { FiatEquivalent } from "@/components/FiatEquivalent";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ListSkeleton } from "@/components/ui/skeleton";
-import {
-  SettleDialog,
-  suggestionToTarget,
-  type SettleTarget,
-} from "@/components/settle/settle-dialog";
+import { SettlementModal } from "@/components/settlements/SettlementModal";
+import type { SettleTarget } from "@/lib/useSettlementFlow";
 import { SectionError, SectionLoading } from "@/components/ui/section";
 import { useBalances } from "@/lib/queries";
 import { resolveSectionStatus } from "@/lib/sectionState";
@@ -23,6 +20,7 @@ import { simplifyDebts } from "@/lib/settlementUtils";
 
 import { AssetSwitcher } from "@/components/AssetSwitcher";
 import { useAssetStore } from "@/lib/asset-store";
+import { MultiCurrencyBalanceSummary } from "@/components/groups/MultiCurrencyBalanceSummary";
 
 export function BalancesPanel({
   groupId,
@@ -76,6 +74,11 @@ export function BalancesPanel({
   return (
     <div className="space-y-6">
       <AssetSwitcher />
+
+      <MultiCurrencyBalanceSummary
+        balances={balances}
+        userId={currentUserId}
+      />
 
       <div>
         <h3 className="mb-3 font-display text-sm uppercase tracking-widest text-ink/60">
@@ -162,7 +165,7 @@ export function BalancesPanel({
         )}
       </div>
 
-      <SettleDialog
+      <SettlementModal
         open={!!target}
         onClose={() => setTarget(null)}
         groupId={groupId}

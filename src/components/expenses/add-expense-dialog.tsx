@@ -15,6 +15,7 @@ import { handleApiError } from "@/lib/errorHandler";
 import { SETTLEMENT_ASSETS, SETTLEMENT_MEMO_PREFIX } from "@/lib/constants";
 import { AssetSelector } from "@/components/expenses/AssetSelector";
 import { ExpenseSplitPreview } from "@/components/expenses/ExpenseSplitPreview";
+import { SplitCalculator, type SplitCalculatorChange } from "@/components/expenses/SplitCalculator";
 import type { CreateExpenseRequest, GroupMember, SplitType, ExpenseShareInput } from "@/lib/types";
 import {
   AMOUNT_DECIMAL_PLACES,
@@ -33,6 +34,7 @@ import { convertCurrency, currencyRate, rateDeviationPercent, SUPPORTED_FIAT_CUR
 import { useLocalStorageDraft } from "@/lib/useLocalStorageDraft";
 import { parseExpenseDeepLink } from "@/lib/deepLink";
 import { useOfflineStore } from "@/lib/store/offlineStore";
+import { useAssetStore, isActiveAsset, type ActiveAsset } from "@/lib/asset-store";
 import { createIdempotencyKey } from "@/lib/submission";
 
 const SUPPORTED_ASSET_CODES = SETTLEMENT_ASSETS.map((a) => a.code);
@@ -77,6 +79,8 @@ export function AddExpenseDialog({
   const [participants, setParticipants] = useState<string[]>(members.map((m) => m.userId));
   const [custom, setCustom] = useState<Record<string, string>>({});
   const [percent, setPercent] = useState<Record<string, string>>({});
+  // Bumped when a draft is restored so the calculator remounts with its values.
+  const [calculatorKey, setCalculatorKey] = useState(0);
   const [memo, setMemo] = useState("");
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -99,6 +103,7 @@ export function AddExpenseDialog({
       if (draft.custom) setCustom(draft.custom);
       if (draft.percent) setPercent(draft.percent);
       if (draft.memo) setMemo(draft.memo);
+      setCalculatorKey((k) => k + 1);
     }
   }, [draft, isRestored]);
 
@@ -156,6 +161,34 @@ export function AddExpenseDialog({
   );
 
   const memberIds = useMemo(() => members.map((m) => m.userId), [members]);
+
+  const calculatorParticipants = useMemo(
+    () =>
+      participants.map((id) => ({
+        userId: id,
+        displayName: members.find((m) => m.userId === id)?.user.displayName ?? id,
+      })),
+    [participants, members]
+  );
+
+  const calculatorInitialValues = useMemo(
+    () =>
+      Object.fromEntries(
+        participants.map((id) => [id, { amount: custom[id], percent: percent[id] }])
+      ),
+    // Only read when the calculator (re)mounts, i.e. when `calculatorKey` changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [calculatorKey]
+  );
+
+  function handleSplitChange(change: SplitCalculatorChange) {
+    setSplitType(change.mode);
+    if (change.mode === "custom") {
+      setCustom(Object.fromEntries(change.shares.map((s) => [s.userId, s.amount ?? ""])));
+    } else if (change.mode === "percentage") {
+      setPercent(Object.fromEntries(change.shares.map((s) => [s.userId, String(s.percent ?? "")])));
+    }
+  }
 
   const sharesPayload = useMemo((): ExpenseShareInput[] => {
     if (splitType === "equal") {
@@ -231,6 +264,10 @@ export function AddExpenseDialog({
       return;
     }
 
+    if (submitBlocked) {
+      return;
+    }
+
     const payload: CreateExpenseRequest = {
       title: title.trim(),
       description: description.trim() || undefined,
@@ -266,10 +303,12 @@ export function AddExpenseDialog({
         idempotencyKey: createIdempotencyKey(),
       });
       clearDraft();
-      toast.success("Expense added successfully");
+      // Success toast is fired by the useCreateExpense hook's onSuccess handler.
       onClose();
     } catch (err) {
-      const msg = handleApiError(err, "Could not create expense");
+      // The hook's onError already toasted; extract the message silently so
+      // we can render it inline without showing a second toast.
+      const msg = handleApiError(err, "Could not create expense", { silent: true });
       setSubmitError(msg);
     } finally {
       setSubmitting(false);
@@ -340,14 +379,30 @@ export function AddExpenseDialog({
           <Label htmlFor="expense-amount">Amount</Label>
           <Input
             id="expense-amount"
+            inputMode="decimal"
+            autoComplete="off"
             value={amount}
-            onChange={(e) => setAmount(e.target.value)}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === "" || /^\d*\.?\d{0,7}$/.test(val)) {
+                setAmount(val);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (["e", "E", "+", "-"].includes(e.key)) {
+                e.preventDefault();
+              }
+            }}
             onBlur={() => markTouched("amount")}
             placeholder="0.00"
+            aria-invalid={getError("amount") ? true : undefined}
+            aria-describedby={getError("amount") ? "expense-amount-error" : undefined}
             className={getError("amount") ? "border-flamingo" : undefined}
           />
           {getError("amount") && (
-            <p className="mt-1 text-xs font-bold text-flamingo-dark">{getError("amount")}</p>
+            <p id="expense-amount-error" className="mt-1 text-xs font-bold text-flamingo-dark" role="alert">
+              {getError("amount")}
+            </p>
           )}
         </div>
 
@@ -400,18 +455,16 @@ export function AddExpenseDialog({
           )}
         </div>
 
-        <div>
-          <Label htmlFor="expense-split-type">Split Type</Label>
-          <Select
-            id="expense-split-type"
-            value={splitType}
-            onChange={(e) => setSplitType(e.target.value as SplitType)}
-          >
-            <option value="equal">Equal</option>
-            <option value="custom">Custom Amount</option>
-            <option value="percentage">Percentage</option>
-          </Select>
-        </div>
+        <SplitCalculator
+          key={calculatorKey}
+          totalAmount={amount}
+          assetCode={asset.code}
+          participants={calculatorParticipants}
+          initialMode={splitType}
+          initialValues={calculatorInitialValues}
+          showAllErrors={showErrors}
+          onChange={handleSplitChange}
+        />
 
         {getError("shares") && (
           <p className="text-xs font-bold text-flamingo-dark">{getError("shares")}</p>

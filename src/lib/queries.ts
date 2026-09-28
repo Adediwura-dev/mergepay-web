@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-query";
 import { api, getInviteByCode } from "./api";
 import { ApiRequestError, handleApiError } from "./errorHandler";
+import { toast } from "sonner";
 import { useAuth } from "./auth-store";
 import type {
   BalancesResponse,
@@ -45,7 +46,7 @@ import {
   createOptimisticExpenseEvent,
   calculateOptimisticActivityList,
 } from "./activity";
-import { buildOptimisticExpense, insertOptimisticExpense } from "./optimistic";
+import { buildOptimisticExpense, insertOptimisticExpense, removeOptimisticExpense } from "./optimistic";
 
 export const qk = {
   me: ["me"] as const,
@@ -672,13 +673,13 @@ export function shouldRetryExpenseCreate(
   failureCount: number,
   error: unknown
 ): boolean {
-  if (
-    error instanceof ApiRequestError &&
-    error.status >= 400 &&
-    error.status < 500
-  ) {
-    return false;
-  }
+  // Only a *classified* HTTP outcome is worth a second attempt: a dropped
+  // connection (status 0) or a transient server-side failure (5xx). A 4xx is
+  // deterministic, and an unclassified error is not something a retry can
+  // plausibly fix — surface both immediately so the form stays responsive.
+  if (!(error instanceof ApiRequestError)) return false;
+  const transient = error.status === 0 || error.status >= 500;
+  if (!transient) return false;
   return failureCount < EXPENSE_CREATE_MAX_RETRIES;
 }
 
@@ -779,6 +780,13 @@ export function useCreateExpense(groupId: string) {
       }
       handleApiError(err, "Failed to create expense. Balances and activity reverted.");
     },
+    // Confirm the expense landed on the server and notify the user.
+    onSuccess: () => {
+      toast.success("Expense added successfully");
+      // Keep the transaction history in sync alongside the group list so
+      // the history page reflects the new expense without a manual refresh.
+      qc.invalidateQueries({ queryKey: qk.history });
+    },
     // Refetch canonical data on settlement (success or error) so the list,
     // balances, ledger, and activity feed reflect the server's view.
     onSettled: () => {
@@ -797,10 +805,52 @@ export function useGroupActivity(groupId: string) {
 }
 
 export function useDeleteExpense(groupId: string) {
+  const qc = useQueryClient();
   const invalidate = useInvalidator();
+
   return useMutation({
     mutationFn: (expenseId: string) => api.deleteExpense(expenseId),
-    onSuccess: () => invalidate(expenseCacheKeys(groupId)),
+
+    onMutate: async (expenseId: string) => {
+      const expensesKey = qk.expenses(groupId);
+      const activityKey = qk.activity(groupId);
+
+      // Cancel in-flight refetches so they don't overwrite the removal.
+      await Promise.all([
+        qc.cancelQueries({ queryKey: expensesKey }),
+        qc.cancelQueries({ queryKey: activityKey }),
+      ]);
+
+      // Snapshot everything we touch so onError can roll back cleanly.
+      const previousExpenses = qc.getQueriesData({ queryKey: expensesKey });
+      const previousActivity = qc.getQueryData<GroupActivityResponse>(activityKey);
+
+      // Remove the expense from every cache entry that holds it (flat +
+      // infinite variants handled by removeOptimisticExpense).
+      qc.setQueriesData({ queryKey: expensesKey }, (old: unknown) =>
+        removeOptimisticExpense(old, expenseId)
+      );
+
+      return { previousExpenses, previousActivity };
+    },
+
+    onError: (_err, _expenseId, context) => {
+      // Put every cache entry back the way it was.
+      if (context?.previousExpenses) {
+        for (const [queryKey, queryData] of context.previousExpenses) {
+          qc.setQueryData(queryKey, queryData);
+        }
+      }
+      if (context?.previousActivity) {
+        qc.setQueryData(qk.activity(groupId), context.previousActivity);
+      }
+    },
+
+    onSettled: () => {
+      // Whether it succeeded or failed, let the server's view win.
+      invalidate(expenseCacheKeys(groupId));
+      qc.invalidateQueries({ queryKey: qk.activity(groupId) });
+    },
   });
 }
 
