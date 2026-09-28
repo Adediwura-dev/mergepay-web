@@ -115,12 +115,14 @@ function renderModal(props: Partial<SettlementModalProps> = {}) {
 
 const confirmAndSign = () => fireEvent.click(screen.getByRole("button", { name: /confirm & sign/i }));
 
+let capturedIntent: ReturnType<typeof intent>;
+
 describe("SettlementModal", () => {
   let currentIntent: ReturnType<typeof intent>;
 
   beforeEach(() => {
-    currentIntent = intent();
-    vi.mocked(api.createSettlement).mockResolvedValue(currentIntent);
+    capturedIntent = intent();
+    vi.mocked(api.createSettlement).mockResolvedValue(capturedIntent);
     vi.mocked(signXdr).mockImplementation(async (xdr: string) => xdr);
   });
 
@@ -145,9 +147,8 @@ describe("SettlementModal", () => {
 
     expect(await screen.findByText("Settled!")).toBeInTheDocument();
     expect(api.createSettlement).toHaveBeenCalledWith("g1", { toUserId: "user-2", amount: "10", assetCode: "XLM", assetIssuer: null });
-    // signXdr is called with the XDR from the API response (verified by the component)
-    expect(signXdr).toHaveBeenCalled();
-    expect(mutateAsync).toHaveBeenCalledWith({ settlementId: "stl-1", data: { signedXdr: currentIntent.xdr } });
+    expect(signXdr).toHaveBeenCalledWith(capturedIntent.xdr, NETWORK_PASSPHRASE);
+    expect(mutateAsync).toHaveBeenCalledWith({ settlementId: "stl-1", data: { signedXdr: capturedIntent.xdr } });
     expect(screen.getByTestId("memo-badge")).toHaveTextContent("rent-0526");
     expect(screen.getByTestId("memo-badge")).toHaveAttribute("data-severity", "none");
     expect(onSettled).toHaveBeenCalledWith(expect.objectContaining({ status: "confirmed" }));
