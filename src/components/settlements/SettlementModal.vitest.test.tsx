@@ -121,6 +121,8 @@ const confirmAndSign = () => fireEvent.click(screen.getByRole("button", { name: 
 let capturedIntent: ReturnType<typeof intent>;
 
 describe("SettlementModal", () => {
+  let currentIntent: ReturnType<typeof intent>;
+
   beforeEach(() => {
     capturedIntent = intent();
     vi.mocked(api.createSettlement).mockResolvedValue(capturedIntent);
