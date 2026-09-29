@@ -85,32 +85,9 @@ export function TrustlineBanner({
   if (status !== "missing" || missing.length === 0) return null;
 
   const addable = missing.filter(isAddableTrustline);
-
-  async function handleAdd(code: string, issuer: string) {
-    if (!address || pending) return;
-    setPending(code);
-    try {
-      await addTrustline(address, code, issuer);
-      toast.success(`${code} trustline confirmed on-chain.`);
-      refresh();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (
-        msg.toLowerCase().includes("reserve") ||
-        msg.toLowerCase().includes("op_low_reserve")
-      ) {
-        toast.error(
-          "Insufficient XLM reserve. Adding a trustline requires an additional 0.5 XLM available in your wallet."
-        );
-      } else if (e instanceof WalletError) {
-        toast.error(walletMessage(e.code));
-      } else {
-        toast.error(msg || "Could not add the trustline. Please try again.");
-      }
-    } finally {
-      setPending(null);
-    }
-  }
+  const { target, phase, failure } = submission;
+  const busy = submission.busy;
+  const activeCode = target?.code ?? null;
 
   return (
     <section
