@@ -187,6 +187,23 @@ interface GroupRecord {
 const NOW = "2026-02-01T09:00:00.000Z";
 
 /**
+ * Mint a bearer token the app's own expiry watcher accepts.
+ *
+ * `useTokenExpiry` reads the `exp` claim out of the payload and signs the user
+ * out when it passes, so an opaque string would end the session on its own
+ * timetable — and the journey, which lives entirely inside one session, would
+ * fall over half way through.
+ */
+function sessionToken(userId: string): string {
+  const base64url = (value: object) =>
+    Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${base64url({ alg: "HS256", typ: "JWT" })}.${base64url({
+    sub: userId,
+    exp: Math.floor(Date.now() / 1000) + 60 * 60,
+  })}.e2e-signature`;
+}
+
+/**
  * A minimal, in-process MergePay API: groups, invites, membership, expenses and
  * the balances derived from them. Only the endpoints this journey touches are
  * implemented; anything else is recorded in `unexpected` and answered 404.
@@ -230,16 +247,33 @@ class FakeMergePayApi {
       });
     }
 
-    // Session — the guard resolves these before any group data.
+    // Session — the guard resolves these before any group data, and the
+    // journey now signs in through them rather than writing a session in.
     if (path === "/api/me") return this.json(route, 200, { user: actor });
     if (path === "/api/auth/refresh" || path === "/api/auth/verify") {
-      return this.json(route, 200, { token: "e2e-session-token", user: actor });
+      return this.json(route, 200, {
+        token: sessionToken(actor.id),
+        user: actor,
+      });
     }
     if (path === "/api/auth/challenge") {
+      // This fake is also the verifier, so the envelope it hands back to be
+      // signed only has to be opaque.
       return this.json(route, 200, {
-        transaction: "AAAAAgAAAAA=",
+        transaction: "e2e-sep10-challenge-xdr",
         networkPassphrase: NETWORK_PASSPHRASE,
       });
+    }
+    if (path === "/api/auth/logout") {
+      return this.json(route, 200, { ok: true });
+    }
+
+    // The dashboard holds the SEP-24 modal mounted, and that hook reads the
+    // anchor catalogue as soon as it mounts — open or not, so every sign-in
+    // asks. Empty is the honest answer for a journey that deposits nothing:
+    // the modal stays closed and no step depends on what it would list.
+    if (path === "/api/anchors") {
+      return this.json(route, 200, { anchors: [] });
     }
 
     if (path === "/api/groups") {
@@ -594,29 +628,31 @@ async function mockFreighter(page: Page, publicKey: string): Promise<void> {
 }
 
 /**
- * Persist a signed-in session before the app boots, so `AuthGuard` renders the
- * page instead of redirecting and `useSessionRestore` has nothing to resolve.
+ * Sign in the way the app signs anybody in: connect the mocked wallet on
+ * `/login`, run the SEP-10 challenge, and let the fake hand back a token.
+ *
+ * There is no shorter way in any more. #543 made the bearer token memory-only —
+ * it never reaches Web Storage, and the store's `merge` deliberately ignores a
+ * hand-written one — so a session cannot be seeded before the page boots: the
+ * guard reads back only a public identity and sends anybody without a live
+ * token to `/login`. Driving the real flow is also what makes the journey worth
+ * running, because it proves `AuthGuard`, the expiry watcher and the wallet mock
+ * agree. Everything after this has to navigate client-side, for the same reason:
+ * a full page load would drop the token and log the journey out.
  */
-async function seedAuthSession(page: Page, user: FakeUser): Promise<void> {
-  await page.addInitScript((account) => {
-    try {
-      sessionStorage.setItem(
-        "mergepay.token",
-        JSON.stringify({
-          state: {
-            token: "e2e-session-token",
-            user: account,
-            lastAuthenticatedAt: new Date().toISOString(),
-            activeWalletPublicKey: account.stellarPublicKey,
-            restoreStatus: "settled",
-          },
-          version: 0,
-        })
-      );
-    } catch {
-      // storage disabled — the guard falls back to the sign-in screen
-    }
-  }, user);
+
+/** Click the connect button on the `/login` the browser is already standing on. */
+async function connectWallet(page: Page): Promise<void> {
+  await page.getByTestId("login-connect").click();
+  // `/dashboard` normally, or the invite this context arrived on — see
+  // `mergepay.pendingInvite` in the visitor leg below.
+  await expect(page).toHaveURL(/\/(?:dashboard|join\/[\w-]+)$/);
+}
+
+/** From wherever the context is now to a signed-in `/dashboard`. */
+async function signIn(page: Page): Promise<void> {
+  await page.goto("/login");
+  await connectWallet(page);
 }
 
 /**
@@ -661,7 +697,6 @@ async function mountJourney(
   user: FakeUser
 ): Promise<void> {
   await mockFreighter(page, user.stellarPublicKey);
-  await seedAuthSession(page, user);
   await mockHorizon(page);
   await page.route("**/api/**", api.handle(user));
   // The dialogs gate their submit buttons on connectivity, and intercepting
@@ -706,7 +741,8 @@ test.describe("group smoke journey", () => {
     const errors = watchForErrors(page);
 
     // ── 1. Create the group ────────────────────────────────────────────────
-    await page.goto("/groups");
+    await signIn(page);
+    await page.locator("aside").getByRole("link", { name: "Groups" }).click();
     await expect(
       page.getByRole("heading", { name: /your groups/i })
     ).toBeVisible();
@@ -777,6 +813,15 @@ test.describe("group smoke journey", () => {
     await mountJourney(visitorPage, api, BOB);
 
     await visitorPage.goto(`/join/${invite.code}`);
+    // An invitee arrives cold, with no session — which is what following a
+    // shared link actually means. The `/join` page parks the code in
+    // `mergepay.pendingInvite` and sends the visitor to `/login` by itself, and
+    // signing in hands them straight back to the link they were given. Waiting
+    // for that redirect is the step that matters: navigating to `/login` early
+    // would abandon the park and land Bob on a dashboard he never asked for.
+    await expect(visitorPage).toHaveURL(/\/login$/);
+    await connectWallet(visitorPage);
+    await expect(visitorPage).toHaveURL(new RegExp(`/join/${invite.code}$`));
     await expect(
       visitorPage.getByRole("heading", { name: /^join group$/i })
     ).toBeVisible();
@@ -801,11 +846,23 @@ test.describe("group smoke journey", () => {
     await visitor.close();
 
     // ── 4. The group now has two members ───────────────────────────────────
-    await page.goto("/groups");
+    // Alice comes back to the app instead of carrying on in the tab she opened
+    // before the invite was redeemed. A new document is the only way her query
+    // cache starts over: inside one session the 30s `staleTime` legitimately
+    // serves her the member list as it looked before Bob joined, and a test
+    // that waited it out would be asserting on a timer.
+    await signIn(page);
+    await page.locator("aside").getByRole("link", { name: "Groups" }).click();
     await expect(page.getByText(/2 members/i)).toBeVisible();
 
     // ── 5. One expense, split across both of them ──────────────────────────
-    await page.goto(`/groups/${groupId}`);
+    await page
+      .getByRole("link", { name: new RegExp(GROUP_NAME) })
+      .first()
+      .click();
+    await expect(page).toHaveURL(
+      new RegExp(`/groups/${groupId}(\\?[^#]*)?$`)
+    );
     await page.getByRole("button", { name: /add expense/i }).click();
     const expenseDialog = page.getByRole("dialog", { name: /add expense/i });
     await expenseDialog.getByLabel(/^title$/i).fill(EXPENSE_TITLE);
